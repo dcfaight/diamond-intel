@@ -1,0 +1,9 @@
+{
+  "report": {
+    "game_id": 1,
+    "team_id": 1,
+    "persona_key": "team_analyst",
+    "report_type": "postgame_insight",
+    "headline": "Generated locally"
+  }
+}

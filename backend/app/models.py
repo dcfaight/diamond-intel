@@ -1,12 +1,16 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, DateTime, Integer, JSON, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+BIGINT_TYPE = Integer().with_variant(BigInteger, "postgresql")
+JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
 
 
 class GeneratedReport(Base):
@@ -21,12 +25,12 @@ class GeneratedReport(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    game_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    team_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    id: Mapped[int] = mapped_column(BIGINT_TYPE, primary_key=True)
+    game_id: Mapped[int] = mapped_column(BIGINT_TYPE, nullable=False)
+    team_id: Mapped[int] = mapped_column(BIGINT_TYPE, nullable=False)
     persona_key: Mapped[str] = mapped_column(Text, nullable=False)
     report_type: Mapped[str] = mapped_column(Text, nullable=False)
-    insight_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    insight_json: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
     headline: Mapped[str | None] = mapped_column(Text, nullable=True)
     llm_output_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
