@@ -1,5 +1,5 @@
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from sqlalchemy.orm import Session
@@ -81,6 +81,23 @@ DEFAULT_SAMPLE_REPORT = {
 class UpsertedReport:
     action: Literal["inserted", "updated", "reused", "regenerated"]
     report: GeneratedReport
+
+
+@dataclass(frozen=True)
+class ReportGenerationSource:
+    mode: Literal["deterministic_local"] = "deterministic_local"
+    version: str = "v1"
+
+
+@dataclass(frozen=True)
+class ReportGenerationRequest:
+    game_id: int
+    team_id: int
+    persona_key: str
+    report_type: str
+    headline: str | None = None
+    llm_output_markdown: str | None = None
+    source: ReportGenerationSource = field(default_factory=ReportGenerationSource)
 
 
 def get_report_by_identity(
@@ -195,32 +212,43 @@ def generate_sample_report(
     headline: str | None = None,
     llm_output_markdown: str | None = None,
 ) -> UpsertedReport:
-    if report_type != "postgame_insight":
-        raise ValueError(
-            "sample generation currently supports only report_type='postgame_insight'"
-        )
-
-    return upsert_report(
-        session,
+    generation_request = ReportGenerationRequest(
         game_id=game_id,
         team_id=team_id,
         persona_key=persona_key,
         report_type=report_type,
-        insight_json=build_sample_postgame_insight(game_id=game_id, team_id=team_id),
         headline=headline,
         llm_output_markdown=llm_output_markdown,
     )
+
+    return upsert_report(
+        session,
+        game_id=generation_request.game_id,
+        team_id=generation_request.team_id,
+        persona_key=generation_request.persona_key,
+        report_type=generation_request.report_type,
+        insight_json=resolve_generation_input(generation_request),
+        headline=generation_request.headline,
+        llm_output_markdown=generation_request.llm_output_markdown,
+    )
+
+
+def resolve_generation_input(request: ReportGenerationRequest) -> dict:
+    if request.report_type != "postgame_insight":
+        raise ValueError(
+            "generation currently supports only report_type='postgame_insight'"
+        )
+    if request.source.mode != "deterministic_local":
+        raise ValueError(
+            f"unsupported generation source mode '{request.source.mode}'"
+        )
+    return build_sample_postgame_insight(game_id=request.game_id, team_id=request.team_id)
 
 
 def generate_report(
     session: Session,
     *,
-    game_id: int,
-    team_id: int,
-    persona_key: str,
-    report_type: str,
-    headline: str | None = None,
-    llm_output_markdown: str | None = None,
+    request: ReportGenerationRequest,
     force_regenerate: bool = False,
 ) -> UpsertedReport:
     """Generate and persist a report, respecting the reuse/regenerate policy.
@@ -230,17 +258,12 @@ def generate_report(
     to rebuild from local data and overwrite the row (action="regenerated" when
     a row existed, "inserted" when it did not).
     """
-    if report_type != "postgame_insight":
-        raise ValueError(
-            "generation currently supports only report_type='postgame_insight'"
-        )
-
     existing = get_report_by_identity(
         session,
-        game_id=game_id,
-        team_id=team_id,
-        persona_key=persona_key,
-        report_type=report_type,
+        game_id=request.game_id,
+        team_id=request.team_id,
+        persona_key=request.persona_key,
+        report_type=request.report_type,
     )
 
     if existing is not None and not force_regenerate:
@@ -248,13 +271,13 @@ def generate_report(
 
     result = upsert_report(
         session,
-        game_id=game_id,
-        team_id=team_id,
-        persona_key=persona_key,
-        report_type=report_type,
-        insight_json=build_sample_postgame_insight(game_id=game_id, team_id=team_id),
-        headline=headline,
-        llm_output_markdown=llm_output_markdown,
+        game_id=request.game_id,
+        team_id=request.team_id,
+        persona_key=request.persona_key,
+        report_type=request.report_type,
+        insight_json=resolve_generation_input(request),
+        headline=request.headline,
+        llm_output_markdown=request.llm_output_markdown,
     )
     # Re-label "updated" as "regenerated" to distinguish from a manual upsert.
     action = "inserted" if result.action == "inserted" else "regenerated"

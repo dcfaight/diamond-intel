@@ -285,6 +285,35 @@ class ReportsApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422)
 
+    def test_generate_report_accepts_explicit_deterministic_local_source(self):
+        response = self.client.post(
+            "/reports/generate",
+            json={
+                **self._generate_payload(),
+                "source": {
+                    "mode": "deterministic_local",
+                    "version": "v2-local",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["action"], "inserted")
+
+    def test_generate_report_rejects_unknown_source_mode(self):
+        response = self.client.post(
+            "/reports/generate",
+            json={
+                **self._generate_payload(),
+                "source": {
+                    "mode": "external_ingestion",
+                    "version": "v1",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+
     # ------------------------------------------------------------------
     # GET /reports/latest
     # ------------------------------------------------------------------
@@ -328,6 +357,124 @@ class ReportsApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "No matching report found")
+
+    def test_get_latest_report_filters_by_persona(self):
+        self.client.post("/reports", json=self.make_report_payload(persona_key="team_analyst"))
+        self.client.post(
+            "/reports",
+            json=self.make_report_payload(
+                game_id=8,
+                team_id=8,
+                persona_key="player_analyst",
+                insight_json=build_sample_postgame_insight(game_id=8, team_id=8),
+            ),
+        )
+
+        response = self.client.get(
+            "/reports/latest",
+            params={"persona_key": "team_analyst"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["persona_key"], "team_analyst")
+
+    def test_get_latest_report_filters_by_report_type(self):
+        self.client.post("/reports", json=self.make_report_payload(report_type="postgame_insight"))
+        self.client.post(
+            "/reports",
+            json=self.make_report_payload(
+                game_id=9,
+                team_id=9,
+                report_type="series_outlook",
+                insight_json=build_sample_postgame_insight(game_id=9, team_id=9),
+            ),
+        )
+
+        response = self.client.get(
+            "/reports/latest",
+            params={"report_type": "postgame_insight"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["report_type"], "postgame_insight")
+
+    def test_get_latest_report_by_team_persona_type_returns_expected_row(self):
+        self.client.post(
+            "/reports",
+            json=self.make_report_payload(
+                game_id=10,
+                team_id=3,
+                persona_key="team_analyst",
+                report_type="postgame_insight",
+                insight_json=build_sample_postgame_insight(game_id=10, team_id=3),
+            ),
+        )
+        self.client.post(
+            "/reports",
+            json=self.make_report_payload(
+                game_id=11,
+                team_id=3,
+                persona_key="team_analyst",
+                report_type="postgame_insight",
+                insight_json=build_sample_postgame_insight(game_id=11, team_id=3),
+            ),
+        )
+
+        response = self.client.get(
+            "/reports/latest/by-team-persona-type",
+            params={
+                "team_id": 3,
+                "persona_key": "team_analyst",
+                "report_type": "postgame_insight",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["game_id"], 11)
+
+    # ------------------------------------------------------------------
+    # Summary retrieval endpoints
+    # ------------------------------------------------------------------
+
+    def test_get_latest_summary_returns_compact_fields(self):
+        self.client.post("/reports", json=self.make_report_payload())
+
+        response = self.client.get("/reports/latest/summary")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            set(body.keys()),
+            {
+                "id",
+                "game_id",
+                "team_id",
+                "persona_key",
+                "report_type",
+                "headline",
+                "created_at",
+            },
+        )
+
+    def test_get_report_summaries_lists_compact_rows(self):
+        self.client.post("/reports", json=self.make_report_payload())
+        self.client.post(
+            "/reports",
+            json=self.make_report_payload(
+                game_id=12,
+                team_id=12,
+                persona_key="player_analyst",
+                insight_json=build_sample_postgame_insight(game_id=12, team_id=12),
+            ),
+        )
+
+        response = self.client.get("/reports/summaries", params={"team_id": 12})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["team_id"], 12)
+        self.assertNotIn("insight_json", body[0])
 
 
 if __name__ == "__main__":

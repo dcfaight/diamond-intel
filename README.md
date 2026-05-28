@@ -148,12 +148,18 @@ Interactive docs: <http://localhost:8000/docs>
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/reports` | Create or update a report (upsert); requires a top-level `report` wrapper |
-| `POST` | `/reports/generate` | Generate and persist a report from local data, honouring the reuse/regenerate policy |
+| `POST` | `/reports/generate` | Generate and persist a report from a structured generation request (`source.mode` currently supports deterministic local mode) while honouring reuse/regenerate policy |
 | `POST` | `/reports/generate-sample` | Generate and persist the deterministic local sample report from identity metadata |
 | `GET`  | `/reports/latest` | Return the single most-recently created report; filter with `?game_id=&team_id=&persona_key=&report_type=` |
+| `GET`  | `/reports/latest/by-team/{team_id}` | Return the latest report for one team |
+| `GET`  | `/reports/latest/by-persona/{persona_key}` | Return the latest report for one persona |
+| `GET`  | `/reports/latest/by-report-type/{report_type}` | Return the latest report for one report type |
+| `GET`  | `/reports/latest/by-team-persona-type` | Return the latest report for an explicit team/persona/type tuple |
+| `GET`  | `/reports/latest/summary` | Return compact latest-report metadata (`id`, identity fields, headline, `created_at`) |
 | `GET`  | `/reports/by-identity` | Fetch a report by logical identity tuple |
 | `GET`  | `/reports/{id}` | Fetch a report by primary-key id |
 | `GET`  | `/reports` | List reports (newest first); filter with `?game_id=&team_id=&persona_key=&report_type=` and paginate with `?limit=&offset=` |
+| `GET`  | `/reports/summaries` | List compact report metadata with the same filters/pagination as `/reports` |
 
 #### `POST /reports` body shape (important)
 
@@ -191,6 +197,10 @@ curl -s -X POST http://localhost:8000/reports/generate \
       "persona_key": "team_analyst",
       "report_type": "postgame_insight",
       "headline": "Guardians postgame snapshot"
+    },
+    "source": {
+      "mode": "deterministic_local",
+      "version": "v1"
     }
   }' | python -m json.tool
 ```
@@ -198,10 +208,25 @@ curl -s -X POST http://localhost:8000/reports/generate \
 Returns `"action": "inserted"` on first call, `"action": "reused"` on subsequent calls.
 Add `"force": true` to the body to force regeneration (`"action": "regenerated"`).
 
+The new `source` object separates report identity from generation-input source selection.
+For now, deterministic local mode is the only supported mode and remains the primary development path.
+
 #### Example: fetch the latest report for a team
 
 ```bash
 curl -s "http://localhost:8000/reports/latest?team_id=1" | python -m json.tool
+```
+
+#### Example: fetch latest report by explicit team/persona/report_type
+
+```bash
+curl -s "http://localhost:8000/reports/latest/by-team-persona-type?team_id=1&persona_key=team_analyst&report_type=postgame_insight" | python -m json.tool
+```
+
+#### Example: fetch compact latest summary
+
+```bash
+curl -s "http://localhost:8000/reports/latest/summary?team_id=1" | python -m json.tool
 ```
 
 #### Example: fetch by id
@@ -220,6 +245,12 @@ curl -s "http://localhost:8000/reports/by-identity?game_id=1&team_id=1&persona_k
 
 ```bash
 curl -s "http://localhost:8000/reports?game_id=1&team_id=1&limit=10&offset=0" | python -m json.tool
+```
+
+#### Example: filter and paginate compact report summaries
+
+```bash
+curl -s "http://localhost:8000/reports/summaries?team_id=1&limit=10&offset=0" | python -m json.tool
 ```
 
 ## Local data strategy (near term)
