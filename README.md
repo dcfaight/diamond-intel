@@ -12,10 +12,15 @@ backend/
     db.py
     models.py
     schemas.py
-    main.py   ← seed / upsert entrypoint
+    report_service.py  ← report persistence + deterministic sample generation
+    main.py   ← seed / sample generation entrypoint
     api.py    ← FastAPI routes
   examples/
+    generate-sample-report-request.json
+    post-report-request.json
     postgame-report-contract.json
+  tests/
+    test_reports_api.py
   sql/
     generated_reports_queries.sql  ← local dev helper queries
   requirements.txt
@@ -57,10 +62,20 @@ Inserted report id: 5
 
 ### Verifying update behavior manually
 
-1. Open `backend/app/main.py` and change the `headline` variable or the `"confidence"` field in `sample_report` (e.g. `"high"`).
+1. Open `backend/app/main.py` and change the `headline` variable or update `DEFAULT_SAMPLE_REPORT` in `backend/app/report_service.py` (for example, change `"confidence"` to `"high"`).
 2. Re-run the script — the output will say `Updated report id: <same id>` and reflect the new value.
 3. Use query 4 in `backend/sql/generated_reports_queries.sql` to confirm in the database: the `row_age` column will be nonzero, confirming the row was not recreated.
 4. To start fresh (test a clean insert), run query 5 from that file to delete the seed row, then re-run the script.
+
+## Local tests
+
+Run the backend tests from `backend/`:
+
+```bash
+cd backend && python -m unittest discover -s tests -v
+```
+
+The test suite uses FastAPI's `TestClient` plus an in-memory SQLite database, so no local PostgreSQL instance is required for automated validation.
 
 ## API
 
@@ -87,7 +102,8 @@ Interactive docs: <http://localhost:8000/docs>
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/reports` | Create or update a report (upsert) |
+| `POST` | `/reports` | Create or update a report (upsert); requires a top-level `report` wrapper |
+| `POST` | `/reports/generate-sample` | Generate and persist the deterministic local sample report from identity metadata |
 | `GET`  | `/reports/by-identity` | Fetch a report by logical identity tuple |
 | `GET`  | `/reports/{id}` | Fetch a report by primary-key id |
 | `GET`  | `/reports` | List reports (newest first); filter with `?game_id=&team_id=&persona_key=&report_type=` and paginate with `?limit=&offset=` |
@@ -98,12 +114,14 @@ Interactive docs: <http://localhost:8000/docs>
 curl -s -X POST http://localhost:8000/reports \
   -H "Content-Type: application/json" \
   -d '{
-    "game_id": 1,
-    "team_id": 1,
-    "persona_key": "team_analyst",
-    "report_type": "postgame_insight",
-    "insight_json": {"note": "test"},
-    "headline": "Test headline"
+    "report": {
+      "game_id": 1,
+      "team_id": 1,
+      "persona_key": "team_analyst",
+      "report_type": "manual_note",
+      "insight_json": {"note": "test"},
+      "headline": "Test headline"
+    }
   }' | python -m json.tool
 ```
 
@@ -117,7 +135,7 @@ Expected shape:
     "game_id": 1,
     "team_id": 1,
     "persona_key": "team_analyst",
-    "report_type": "postgame_insight",
+    "report_type": "manual_note",
     "insight_json": {...},
     "headline": "Test headline",
     "llm_output_markdown": null,
@@ -145,6 +163,14 @@ Invoke-RestMethod -Method Post `
   -Body (Get-Content -Raw .\backend\examples\post-report-request.json)
 ```
 
+#### Example: generate and persist the deterministic local sample report
+
+```bash
+curl -s -X POST http://localhost:8000/reports/generate-sample \
+  -H "Content-Type: application/json" \
+  -d @backend/examples/generate-sample-report-request.json | python -m json.tool
+```
+
 #### Example: fetch by id
 
 ```bash
@@ -165,9 +191,11 @@ curl -s "http://localhost:8000/reports?game_id=1&team_id=1&limit=10&offset=0" | 
 
 ## Local data strategy (near term)
 
-For this stage of the project, the primary local development path remains the manual deterministic seed/sample contract in `backend/app/main.py` and the API sample request files in `backend/examples/`.
+For this stage of the project, the primary local development path remains the deterministic manual/sample flow in `backend/app/report_service.py`, `backend/app/main.py`, and the API sample request files in `backend/examples/`.
 
 This keeps API iteration predictable while the repo does not yet include a dedicated game/team ingestion pipeline.
+
+The small service boundary in `backend/app/report_service.py` keeps report validation/persistence, report generation, and API route handling separate so future repo-native data sources can plug in without changing the current local-first workflow.
 
 ## SQL helper queries
 

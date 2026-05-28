@@ -6,8 +6,13 @@ from pydantic import BaseModel, ValidationError, field_validator, model_validato
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.main import upsert_report
 from app.models import GeneratedReport
+from app.report_service import (
+    generate_sample_report,
+    get_report_by_identity as get_report_by_identity_record,
+    list_reports as list_reports_records,
+    upsert_report,
+)
 from app.schemas import PostgameReportInsight
 
 app = FastAPI(title="Diamond Intel API")
@@ -29,12 +34,11 @@ def get_db():
 # Request / response schemas
 # ---------------------------------------------------------------------------
 
-class ReportUpsertRequest(BaseModel):
+class ReportIdentityPayload(BaseModel):
     game_id: int
     team_id: int
     persona_key: str
     report_type: str
-    insight_json: dict
     headline: str | None = None
     llm_output_markdown: str | None = None
 
@@ -45,6 +49,10 @@ class ReportUpsertRequest(BaseModel):
         if not cleaned:
             raise ValueError("must not be empty")
         return cleaned
+
+
+class ReportPayload(ReportIdentityPayload):
+    insight_json: dict
 
     @model_validator(mode="after")
     def validate_postgame_payload(self):
@@ -60,6 +68,22 @@ class ReportUpsertRequest(BaseModel):
             raise ValueError("game_id must match insight_json.game_id")
         if insight.team.id != self.team_id:
             raise ValueError("team_id must match insight_json.team.id")
+        return self
+
+
+class ReportUpsertRequest(BaseModel):
+    report: ReportPayload
+
+
+class SampleReportGenerationRequest(BaseModel):
+    report: ReportIdentityPayload
+
+    @model_validator(mode="after")
+    def validate_supported_report_type(self):
+        if self.report.report_type != "postgame_insight":
+            raise ValueError(
+                "sample generation currently supports only report_type='postgame_insight'"
+            )
         return self
 
 
@@ -92,28 +116,35 @@ def create_or_update_report(
     db: Session = Depends(get_db),
 ):
     """Create or update a generated postgame report (upsert on logical identity)."""
-    existing = (
-        db.query(GeneratedReport.id)
-        .filter_by(
-            game_id=body.game_id,
-            team_id=body.team_id,
-            persona_key=body.persona_key,
-            report_type=body.report_type,
-        )
-        .first()
+    result = upsert_report(
+        db,
+        game_id=body.report.game_id,
+        team_id=body.report.team_id,
+        persona_key=body.report.persona_key,
+        report_type=body.report.report_type,
+        insight_json=body.report.insight_json,
+        headline=body.report.headline,
+        llm_output_markdown=body.report.llm_output_markdown,
     )
-    row = upsert_report(
-        session=db,
-        game_id=body.game_id,
-        team_id=body.team_id,
-        persona_key=body.persona_key,
-        report_type=body.report_type,
-        insight_json=body.insight_json,
-        headline=body.headline,
-        llm_output_markdown=body.llm_output_markdown,
+    return ReportUpsertResponse(action=result.action, report=result.report)
+
+
+@app.post("/reports/generate-sample", response_model=ReportUpsertResponse, status_code=200)
+def create_sample_report(
+    body: SampleReportGenerationRequest,
+    db: Session = Depends(get_db),
+):
+    """Generate and persist the deterministic local sample report."""
+    result = generate_sample_report(
+        db,
+        game_id=body.report.game_id,
+        team_id=body.report.team_id,
+        persona_key=body.report.persona_key,
+        report_type=body.report.report_type,
+        headline=body.report.headline,
+        llm_output_markdown=body.report.llm_output_markdown,
     )
-    action: Literal["inserted", "updated"] = "updated" if existing else "inserted"
-    return ReportUpsertResponse(action=action, report=row)
+    return ReportUpsertResponse(action=result.action, report=result.report)
 
 
 @app.get("/reports/by-identity", response_model=ReportResponse)
@@ -125,15 +156,12 @@ def get_report_by_identity(
     db: Session = Depends(get_db),
 ):
     """Fetch a single report by logical identity fields."""
-    row = (
-        db.query(GeneratedReport)
-        .filter_by(
-            game_id=game_id,
-            team_id=team_id,
-            persona_key=persona_key,
-            report_type=report_type,
-        )
-        .first()
+    row = get_report_by_identity_record(
+        db,
+        game_id=game_id,
+        team_id=team_id,
+        persona_key=persona_key,
+        report_type=report_type,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found for identity")
@@ -160,18 +188,12 @@ def find_reports(
     db: Session = Depends(get_db),
 ):
     """List reports with optional filters and stable newest-first ordering."""
-    query = db.query(GeneratedReport)
-    if game_id is not None:
-        query = query.filter(GeneratedReport.game_id == game_id)
-    if team_id is not None:
-        query = query.filter(GeneratedReport.team_id == team_id)
-    if persona_key is not None:
-        query = query.filter(GeneratedReport.persona_key == persona_key)
-    if report_type is not None:
-        query = query.filter(GeneratedReport.report_type == report_type)
-    return (
-        query.order_by(GeneratedReport.created_at.desc(), GeneratedReport.id.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
+    return list_reports_records(
+        db,
+        game_id=game_id,
+        team_id=team_id,
+        persona_key=persona_key,
+        report_type=report_type,
+        limit=limit,
+        offset=offset,
     )
