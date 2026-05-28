@@ -7,6 +7,23 @@ from sqlalchemy.orm import Session
 from app.models import GeneratedReport
 from app.schemas import PostgameReportInsight
 
+# ---------------------------------------------------------------------------
+# Report identity and regeneration policy
+# ---------------------------------------------------------------------------
+# A "report" is uniquely identified by (game_id, team_id, persona_key, report_type).
+# Only one report row exists per identity tuple (enforced by a DB unique constraint).
+#
+# Generation behaviour:
+#   - default (force_regenerate=False): if a report already exists for the
+#     identity, return it unchanged with action="reused".
+#   - force_regenerate=True: rebuild the insight payload from local data and
+#     overwrite the existing row, returning action="regenerated" (or "inserted"
+#     if no row existed yet).
+#
+# Manual upsert via POST /reports always overwrites (action="inserted" or "updated")
+# regardless of the force flag, because the caller is providing the full payload.
+# ---------------------------------------------------------------------------
+
 DEFAULT_SAMPLE_REPORT = {
     "game_id": 1,
     "team": {
@@ -62,7 +79,7 @@ DEFAULT_SAMPLE_REPORT = {
 
 @dataclass
 class UpsertedReport:
-    action: Literal["inserted", "updated"]
+    action: Literal["inserted", "updated", "reused", "regenerated"]
     report: GeneratedReport
 
 
@@ -192,4 +209,77 @@ def generate_sample_report(
         insight_json=build_sample_postgame_insight(game_id=game_id, team_id=team_id),
         headline=headline,
         llm_output_markdown=llm_output_markdown,
+    )
+
+
+def generate_report(
+    session: Session,
+    *,
+    game_id: int,
+    team_id: int,
+    persona_key: str,
+    report_type: str,
+    headline: str | None = None,
+    llm_output_markdown: str | None = None,
+    force_regenerate: bool = False,
+) -> UpsertedReport:
+    """Generate and persist a report, respecting the reuse/regenerate policy.
+
+    By default (force_regenerate=False) an existing report for the identity
+    tuple is returned unchanged with action="reused".  Pass force_regenerate=True
+    to rebuild from local data and overwrite the row (action="regenerated" when
+    a row existed, "inserted" when it did not).
+    """
+    if report_type != "postgame_insight":
+        raise ValueError(
+            "generation currently supports only report_type='postgame_insight'"
+        )
+
+    existing = get_report_by_identity(
+        session,
+        game_id=game_id,
+        team_id=team_id,
+        persona_key=persona_key,
+        report_type=report_type,
+    )
+
+    if existing is not None and not force_regenerate:
+        return UpsertedReport(action="reused", report=existing)
+
+    result = upsert_report(
+        session,
+        game_id=game_id,
+        team_id=team_id,
+        persona_key=persona_key,
+        report_type=report_type,
+        insight_json=build_sample_postgame_insight(game_id=game_id, team_id=team_id),
+        headline=headline,
+        llm_output_markdown=llm_output_markdown,
+    )
+    # Re-label "updated" as "regenerated" to distinguish from a manual upsert.
+    action = "inserted" if result.action == "inserted" else "regenerated"
+    return UpsertedReport(action=action, report=result.report)
+
+
+def get_latest_report(
+    session: Session,
+    *,
+    game_id: int | None = None,
+    team_id: int | None = None,
+    persona_key: str | None = None,
+    report_type: str | None = None,
+) -> GeneratedReport | None:
+    """Return the single most-recently created report matching the given filters."""
+    query = session.query(GeneratedReport)
+    if game_id is not None:
+        query = query.filter(GeneratedReport.game_id == game_id)
+    if team_id is not None:
+        query = query.filter(GeneratedReport.team_id == team_id)
+    if persona_key is not None:
+        query = query.filter(GeneratedReport.persona_key == persona_key)
+    if report_type is not None:
+        query = query.filter(GeneratedReport.report_type == report_type)
+    return (
+        query.order_by(GeneratedReport.created_at.desc(), GeneratedReport.id.desc())
+        .first()
     )

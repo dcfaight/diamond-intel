@@ -1,4 +1,6 @@
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -8,7 +10,9 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.models import GeneratedReport
 from app.report_service import (
+    generate_report,
     generate_sample_report,
+    get_latest_report as get_latest_report_record,
     get_report_by_identity as get_report_by_identity_record,
     list_reports as list_reports_records,
     upsert_report,
@@ -16,6 +20,13 @@ from app.report_service import (
 from app.schemas import PostgameReportInsight
 
 app = FastAPI(title="Diamond Intel API")
+
+# Load canonical POST /reports example once at startup so the Swagger UI and
+# the example file share a single source of truth.
+_EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
+_CANONICAL_POST_EXAMPLE: dict = json.loads(
+    (_EXAMPLES_DIR / "post-report-request.json").read_text()
+)
 
 
 # ---------------------------------------------------------------------------
@@ -81,66 +92,7 @@ class ReportUpsertRequest(BaseModel):
     report: ReportPayload
 
     model_config = {
-        "json_schema_extra": {
-            "example": {
-                "report": {
-                    "game_id": 1,
-                    "team_id": 1,
-                    "persona_key": "team_analyst",
-                    "report_type": "postgame_insight",
-                    "headline": "Guardians postgame snapshot",
-                    "insight_json": {
-                        "game_id": 1,
-                        "team": {
-                            "id": 1,
-                            "name": "Cleveland Guardians",
-                            "abbreviation": "CLE",
-                        },
-                        "opponent": {
-                            "id": 2,
-                            "name": "Detroit Tigers",
-                            "abbreviation": "DET",
-                        },
-                        "game": {
-                            "date": "2026-05-28",
-                            "status": "Final",
-                            "score": {"team": 2, "opponent": 4},
-                            "result": "loss",
-                            "venue": "Progressive Field",
-                        },
-                        "top_factors": [
-                            {
-                                "key": "missed_chances",
-                                "title": "Missed chances with runners on",
-                                "detail": (
-                                    "Cleveland failed to convert enough traffic "
-                                    "into runs."
-                                ),
-                            }
-                        ],
-                        "player_trends": [
-                            {
-                                "player_name": "Jose Ramirez",
-                                "trend_type": "stock_up",
-                                "detail": (
-                                    "Reached base and remained the steadiest "
-                                    "threat in the lineup."
-                                ),
-                            }
-                        ],
-                        "watch_next": {
-                            "title": "What to watch next",
-                            "detail": (
-                                "Watch whether Cleveland can generate more "
-                                "extra-base impact in the next game."
-                            ),
-                        },
-                        "confidence": "medium",
-                        "generated_from": {"source": "manual_seed", "version": "v1"},
-                    },
-                }
-            }
-        }
+        "json_schema_extra": {"example": _CANONICAL_POST_EXAMPLE}
     }
 
 
@@ -152,6 +104,27 @@ class SampleReportGenerationRequest(BaseModel):
         if self.report.report_type != "postgame_insight":
             raise ValueError(
                 "sample generation currently supports only report_type='postgame_insight'"
+            )
+        return self
+
+
+class GenerateReportRequest(BaseModel):
+    """Request body for POST /reports/generate.
+
+    Accepts a logical report identity plus an optional ``force`` flag.
+    When ``force`` is False (the default) an existing report for the identity
+    is returned unchanged (action="reused").  Set ``force=true`` to rebuild
+    from local data and overwrite the stored row (action="regenerated").
+    """
+
+    report: ReportIdentityPayload
+    force: bool = False
+
+    @model_validator(mode="after")
+    def validate_supported_report_type(self):
+        if self.report.report_type != "postgame_insight":
+            raise ValueError(
+                "generation currently supports only report_type='postgame_insight'"
             )
         return self
 
@@ -171,7 +144,7 @@ class ReportResponse(BaseModel):
 
 
 class ReportUpsertResponse(BaseModel):
-    action: Literal["inserted", "updated"]
+    action: Literal["inserted", "updated", "reused", "regenerated"]
     report: ReportResponse
 
 
@@ -214,6 +187,57 @@ def create_sample_report(
         llm_output_markdown=body.report.llm_output_markdown,
     )
     return ReportUpsertResponse(action=result.action, report=result.report)
+
+
+@app.post("/reports/generate", response_model=ReportUpsertResponse, status_code=200)
+def generate_report_endpoint(
+    body: GenerateReportRequest,
+    db: Session = Depends(get_db),
+):
+    """Generate a report from local data, honouring the reuse/regenerate policy.
+
+    - ``force=false`` (default): return the stored report unchanged if it already
+      exists (action="reused").
+    - ``force=true``: rebuild from local data and overwrite the row
+      (action="regenerated"), or insert if none exists (action="inserted").
+    """
+    result = generate_report(
+        db,
+        game_id=body.report.game_id,
+        team_id=body.report.team_id,
+        persona_key=body.report.persona_key,
+        report_type=body.report.report_type,
+        headline=body.report.headline,
+        llm_output_markdown=body.report.llm_output_markdown,
+        force_regenerate=body.force,
+    )
+    return ReportUpsertResponse(action=result.action, report=result.report)
+
+
+@app.get("/reports/latest", response_model=ReportResponse)
+def get_latest_report(
+    game_id: int | None = None,
+    team_id: int | None = None,
+    persona_key: str | None = None,
+    report_type: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Return the single most-recently created report matching the given filters.
+
+    Useful for quickly checking the latest report for a team, persona, or game
+    without paginating through the full list.  Returns 404 if no matching report
+    exists.
+    """
+    row = get_latest_report_record(
+        db,
+        game_id=game_id,
+        team_id=team_id,
+        persona_key=persona_key,
+        report_type=report_type,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="No matching report found")
+    return row
 
 
 @app.get("/reports/by-identity", response_model=ReportResponse)
