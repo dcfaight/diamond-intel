@@ -1,0 +1,58 @@
+{
+  "game_id": 1,
+  "team_id": 1,
+  "persona_key": "team_analyst",
+  "report_type": "postgame_insight",
+  "headline": "Contract-based test",
+  "insight_json": {
+    "game_id": 1,
+    "team": {
+      "id": 1,
+      "name": "Cleveland Guardians",
+      "abbreviation": "CLE"
+    },
+    "opponent": {
+      "id": 2,
+      "name": "Detroit Tigers",
+      "abbreviation": "DET"
+    },
+    "game": {
+      "date": "2026-05-28",
+      "status": "Final",
+      "score": {
+        "team": 2,
+        "opponent": 4
+      },
+      "result": "loss",
+      "venue": "Progressive Field"
+    },
+    "top_factors": [
+      {
+        "key": "missed_chances",
+        "title": "Missed chances with runners on",
+        "detail": "Cleveland failed to convert enough traffic into runs."
+      },
+      {
+        "key": "late_damage",
+        "title": "Late damage decided the night",
+        "detail": "Detroit produced the biggest swings after the middle innings."
+      }
+    ],
+    "player_trends": [
+      {
+        "player_name": "Jose Ramirez",
+        "trend_type": "stock_up",
+        "detail": "Reached base and remained the steadiest threat in the lineup."
+      }
+    ],
+    "watch_next": {
+      "title": "What to watch next",
+      "detail": "Watch whether Cleveland can generate more extra-base impact in the next game."
+    },
+    "confidence": "medium",
+    "generated_from": {
+      "source": "manual_seed",
+      "version": "v1"
+    }
+  }
+}
