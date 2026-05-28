@@ -67,8 +67,19 @@ Inserted report id: 5
 Start the development server:
 
 ```bash
-cd backend && uvicorn app.api:app --reload
+cd backend && python -m uvicorn app.api:app --reload
 ```
+
+### VS Code on Windows quick start
+
+In a VS Code terminal (PowerShell):
+
+```powershell
+cd backend
+py -m uvicorn app.api:app --reload
+```
+
+Keep that terminal running, then use a second VS Code terminal for `curl` examples.
 
 Interactive docs: <http://localhost:8000/docs>
 
@@ -77,8 +88,9 @@ Interactive docs: <http://localhost:8000/docs>
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/reports` | Create or update a report (upsert) |
+| `GET`  | `/reports/by-identity` | Fetch a report by logical identity tuple |
 | `GET`  | `/reports/{id}` | Fetch a report by primary-key id |
-| `GET`  | `/reports` | List reports; filter with `?game_id=&team_id=&persona_key=&report_type=` |
+| `GET`  | `/reports` | List reports (newest first); filter with `?game_id=&team_id=&persona_key=&report_type=` and paginate with `?limit=&offset=` |
 
 #### Example: upsert via curl
 
@@ -95,17 +107,67 @@ curl -s -X POST http://localhost:8000/reports \
   }' | python -m json.tool
 ```
 
+Expected shape:
+
+```json
+{
+  "action": "inserted",
+  "report": {
+    "id": 1,
+    "game_id": 1,
+    "team_id": 1,
+    "persona_key": "team_analyst",
+    "report_type": "postgame_insight",
+    "insight_json": {...},
+    "headline": "Test headline",
+    "llm_output_markdown": null,
+    "created_at": "2026-05-28T20:00:00+00:00"
+  }
+}
+```
+
+`report_type="postgame_insight"` payloads are validated against the contract in `backend/examples/postgame-report-contract.json`, including matching `game_id` and `team.id`.
+
+#### Example: upsert using the full sample request file
+
+```bash
+curl -s -X POST http://localhost:8000/reports \
+  -H "Content-Type: application/json" \
+  -d @backend/examples/post-report-request.json | python -m json.tool
+```
+
+PowerShell equivalent:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8000/reports" `
+  -ContentType "application/json" `
+  -Body (Get-Content -Raw .\backend\examples\post-report-request.json)
+```
+
 #### Example: fetch by id
 
 ```bash
 curl -s http://localhost:8000/reports/1 | python -m json.tool
 ```
 
-#### Example: filter by game
+#### Example: fetch by logical identity
 
 ```bash
-curl -s "http://localhost:8000/reports?game_id=1&team_id=1" | python -m json.tool
+curl -s "http://localhost:8000/reports/by-identity?game_id=1&team_id=1&persona_key=team_analyst&report_type=postgame_insight" | python -m json.tool
 ```
+
+#### Example: filter and paginate report listing
+
+```bash
+curl -s "http://localhost:8000/reports?game_id=1&team_id=1&limit=10&offset=0" | python -m json.tool
+```
+
+## Local data strategy (near term)
+
+For this stage of the project, the primary local development path remains the manual deterministic seed/sample contract in `backend/app/main.py` and the API sample request files in `backend/examples/`.
+
+This keeps API iteration predictable while the repo does not yet include a dedicated game/team ingestion pipeline.
 
 ## SQL helper queries
 

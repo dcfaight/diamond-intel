@@ -44,6 +44,9 @@ def upsert_report(
 
 
 def run() -> None:
+    # Near-term local data strategy:
+    # keep this deterministic manual seed as the primary development path until
+    # a repo-owned game/team ingestion flow exists.
     sample_report = {
         "game_id": 1,
         "team": {
