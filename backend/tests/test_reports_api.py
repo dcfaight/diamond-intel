@@ -1,3 +1,5 @@
+import json
+import pathlib
 import unittest
 
 from fastapi.testclient import TestClient
@@ -6,8 +8,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api import app, get_db
+from app.api import ReportUpsertRequest
 from app.models import Base, GeneratedReport
 from app.report_service import build_sample_postgame_insight
+
+_EXAMPLES_DIR = pathlib.Path(__file__).parent.parent / "examples"
 
 
 class ReportsApiTests(unittest.TestCase):
@@ -203,6 +208,126 @@ class ReportsApiTests(unittest.TestCase):
         self.assertEqual(
             body["report"]["insight_json"]["generated_from"]["source"], "manual_seed"
         )
+
+    # ------------------------------------------------------------------
+    # Canonical example contract test
+    # ------------------------------------------------------------------
+
+    def test_canonical_post_example_validates_against_request_model(self):
+        """The canonical POST /reports example file must parse cleanly.
+
+        This test is the anti-drift safeguard: any schema change that makes the
+        canonical example invalid will fail CI immediately.
+        """
+        raw = (_EXAMPLES_DIR / "post-report-request.json").read_text()
+        data = json.loads(raw)
+        # Validate against the Pydantic model (raises if the shape is wrong)
+        request = ReportUpsertRequest.model_validate(data)
+        self.assertEqual(request.report.report_type, "postgame_insight")
+
+    # ------------------------------------------------------------------
+    # POST /reports/generate — reuse and force-regenerate behaviour
+    # ------------------------------------------------------------------
+
+    def _generate_payload(self, **overrides):
+        payload = {
+            "game_id": 5,
+            "team_id": 5,
+            "persona_key": "team_analyst",
+            "report_type": "postgame_insight",
+            "headline": "Generate test",
+        }
+        payload.update(overrides)
+        return {"report": payload}
+
+    def test_generate_report_inserts_when_no_existing_report(self):
+        response = self.client.post(
+            "/reports/generate", json=self._generate_payload()
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["action"], "inserted")
+        self.assertEqual(body["report"]["game_id"], 5)
+
+    def test_generate_report_reuses_existing_by_default(self):
+        # First call inserts
+        first = self.client.post("/reports/generate", json=self._generate_payload())
+        self.assertEqual(first.json()["action"], "inserted")
+
+        # Second call with same identity and no force should reuse
+        second = self.client.post("/reports/generate", json=self._generate_payload())
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["action"], "reused")
+        self.assertEqual(first.json()["report"]["id"], second.json()["report"]["id"])
+
+    def test_generate_report_force_regenerates(self):
+        # Insert first
+        first = self.client.post("/reports/generate", json=self._generate_payload())
+        self.assertEqual(first.json()["action"], "inserted")
+
+        # Force regenerate
+        payload = self._generate_payload()
+        payload["force"] = True
+        second = self.client.post("/reports/generate", json=payload)
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["action"], "regenerated")
+        # Same row (same id), not a new one
+        self.assertEqual(first.json()["report"]["id"], second.json()["report"]["id"])
+
+    def test_generate_report_rejects_unsupported_report_type(self):
+        response = self.client.post(
+            "/reports/generate",
+            json=self._generate_payload(report_type="unknown_type"),
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+    # ------------------------------------------------------------------
+    # GET /reports/latest
+    # ------------------------------------------------------------------
+
+    def test_get_latest_report_returns_most_recent(self):
+        self.client.post("/reports", json=self.make_report_payload())
+        second = self.make_report_payload(
+            game_id=3,
+            team_id=3,
+            persona_key="team_analyst",
+            insight_json=build_sample_postgame_insight(game_id=3, team_id=3),
+        )
+        self.client.post("/reports", json=second)
+
+        # Latest with no filter should be the second one (most recent)
+        response = self.client.get("/reports/latest")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["game_id"], 3)
+
+    def test_get_latest_report_filters_by_team(self):
+        # Two reports for different teams
+        self.client.post("/reports", json=self.make_report_payload())
+        second = self.make_report_payload(
+            game_id=4,
+            team_id=4,
+            persona_key="team_analyst",
+            insight_json=build_sample_postgame_insight(game_id=4, team_id=4),
+        )
+        self.client.post("/reports", json=second)
+
+        response = self.client.get("/reports/latest", params={"team_id": 1})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["team_id"], 1)
+
+    def test_get_latest_report_returns_404_when_no_match(self):
+        response = self.client.get(
+            "/reports/latest", params={"team_id": 9999}
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "No matching report found")
 
 
 if __name__ == "__main__":

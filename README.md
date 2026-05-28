@@ -12,12 +12,12 @@ backend/
     db.py
     models.py
     schemas.py
-    report_service.py  ← report persistence + deterministic sample generation
+    report_service.py  ← report persistence + generation (reuse/regenerate policy)
     main.py   ← seed / sample generation entrypoint
     api.py    ← FastAPI routes
   examples/
     generate-sample-report-request.json
-    post-report-request.json
+    post-report-request.json          ← canonical POST /reports example (single source of truth)
     postgame-report-contract.json
   tests/
     test_reports_api.py
@@ -76,7 +76,51 @@ cd backend && python -m unittest discover -s tests -v
 ```
 
 The test suite uses FastAPI's `TestClient` plus an in-memory SQLite database, so no local PostgreSQL instance is required for automated validation.
-`backend/requirements.txt` now includes the `httpx` dependency required by FastAPI's test client.
+`backend/requirements.txt` includes the `httpx` dependency required by FastAPI's test client.
+
+The suite currently covers:
+
+- `POST /reports` — contract validation, blank-field rejection, mismatch checks, upsert behaviour
+- `POST /reports/generate` — insert, reuse, force-regenerate, unsupported type rejection
+- `GET /reports/latest` — most-recent return, team filter, 404 on no match
+- `GET /reports/by-identity` — happy path and 404
+- `GET /reports` — list/filter
+- Canonical example contract: `test_canonical_post_example_validates_against_request_model`
+
+## Canonical example and anti-drift safeguard
+
+`backend/examples/post-report-request.json` is the **single canonical source** for the `POST /reports` request body.
+
+- The Swagger UI example in `/docs` is loaded directly from this file at startup (`api.py` reads it with `json.loads`).
+- The `test_canonical_post_example_validates_against_request_model` test parses the file and validates it against the `ReportUpsertRequest` Pydantic model in CI.
+- Any schema change that breaks the file's shape will fail CI immediately rather than silently drifting.
+
+To exercise the canonical example directly:
+
+```bash
+curl -s -X POST http://localhost:8000/reports \
+  -H "Content-Type: application/json" \
+  -d @backend/examples/post-report-request.json | python -m json.tool
+```
+
+## Report identity and regeneration policy
+
+A report is uniquely identified by the four-field identity tuple:
+
+```
+(game_id, team_id, persona_key, report_type)
+```
+
+One row per identity is enforced by a database unique constraint.
+
+| Endpoint | Behaviour |
+|----------|-----------|
+| `POST /reports` | Always upserts (insert → `"inserted"`, overwrite → `"updated"`) |
+| `POST /reports/generate` (default) | Returns the stored row unchanged → `"reused"` |
+| `POST /reports/generate` + `"force": true` | Rebuilds from local data and overwrites → `"regenerated"` (or `"inserted"` if no row existed) |
+| `POST /reports/generate-sample` | Always upserts using the deterministic sample data |
+
+Automatic regeneration does not happen — a report is only rebuilt when you explicitly call the generate endpoint with `"force": true` or submit a new payload via `POST /reports`.
 
 ## API
 
@@ -104,7 +148,9 @@ Interactive docs: <http://localhost:8000/docs>
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/reports` | Create or update a report (upsert); requires a top-level `report` wrapper |
+| `POST` | `/reports/generate` | Generate and persist a report from local data, honouring the reuse/regenerate policy |
 | `POST` | `/reports/generate-sample` | Generate and persist the deterministic local sample report from identity metadata |
+| `GET`  | `/reports/latest` | Return the single most-recently created report; filter with `?game_id=&team_id=&persona_key=&report_type=` |
 | `GET`  | `/reports/by-identity` | Fetch a report by logical identity tuple |
 | `GET`  | `/reports/{id}` | Fetch a report by primary-key id |
 | `GET`  | `/reports` | List reports (newest first); filter with `?game_id=&team_id=&persona_key=&report_type=` and paginate with `?limit=&offset=` |
@@ -116,45 +162,7 @@ Interactive docs: <http://localhost:8000/docs>
 - `backend/examples/postgame-report-contract.json` contains only the **inner** `insight_json` contract object.
 - If you submit only the inner object or the old unwrapped payload, FastAPI will return `422`.
 
-#### Example: upsert via curl
-
-```bash
-curl -s -X POST http://localhost:8000/reports \
-  -H "Content-Type: application/json" \
-  -d '{
-    "report": {
-      "game_id": 1,
-      "team_id": 1,
-      "persona_key": "team_analyst",
-      "report_type": "manual_note",
-      "insight_json": {"note": "test"},
-      "headline": "Test headline"
-    }
-  }' | python -m json.tool
-```
-
-Expected shape:
-
-```json
-{
-  "action": "inserted",
-  "report": {
-    "id": 1,
-    "game_id": 1,
-    "team_id": 1,
-    "persona_key": "team_analyst",
-    "report_type": "manual_note",
-    "insight_json": {...},
-    "headline": "Test headline",
-    "llm_output_markdown": null,
-    "created_at": "2026-05-28T20:00:00+00:00"
-  }
-}
-```
-
-`report_type="postgame_insight"` payloads are validated against the contract in `backend/examples/postgame-report-contract.json`, including matching `game_id` and `team.id`. That file is the `insight_json` shape only — keep the outer `{"report": ...}` wrapper in your request body.
-
-#### Example: upsert using the full sample request file
+#### Example: upsert using the canonical sample request file
 
 ```bash
 curl -s -X POST http://localhost:8000/reports \
@@ -171,12 +179,29 @@ Invoke-RestMethod -Method Post `
   -Body (Get-Content -Raw .\backend\examples\post-report-request.json)
 ```
 
-#### Example: generate and persist the deterministic local sample report
+#### Example: generate a report (reuse by default)
 
 ```bash
-curl -s -X POST http://localhost:8000/reports/generate-sample \
+curl -s -X POST http://localhost:8000/reports/generate \
   -H "Content-Type: application/json" \
-  -d @backend/examples/generate-sample-report-request.json | python -m json.tool
+  -d '{
+    "report": {
+      "game_id": 1,
+      "team_id": 1,
+      "persona_key": "team_analyst",
+      "report_type": "postgame_insight",
+      "headline": "Guardians postgame snapshot"
+    }
+  }' | python -m json.tool
+```
+
+Returns `"action": "inserted"` on first call, `"action": "reused"` on subsequent calls.
+Add `"force": true` to the body to force regeneration (`"action": "regenerated"`).
+
+#### Example: fetch the latest report for a team
+
+```bash
+curl -s "http://localhost:8000/reports/latest?team_id=1" | python -m json.tool
 ```
 
 #### Example: fetch by id
