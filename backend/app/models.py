@@ -22,10 +22,8 @@ class GeneratedReport(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    game_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("games.id", ondelete="CASCADE"), nullable=False
-    )
-    team_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("teams.id"), nullable=False)
+    game_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    team_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     persona_key: Mapped[str] = mapped_column(Text, nullable=False)
     report_type: Mapped[str] = mapped_column(Text, nullable=False)
     insight_json: Mapped[dict] = mapped_column(JSONB, nullable=False)

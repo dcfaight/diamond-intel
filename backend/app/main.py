@@ -1,9 +1,9 @@
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from db import SessionLocal
-from models import GeneratedReport
-from schemas import PostgameReportInsight
+from app.db import SessionLocal
+from app.models import GeneratedReport
+from app.schemas import PostgameReportInsight
 
 
 def run() -> None:
