@@ -1,9 +1,46 @@
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models import GeneratedReport
 from app.schemas import PostgameReportInsight
+
+
+def upsert_report(
+    session: Session,
+    game_id: int,
+    team_id: int,
+    persona_key: str,
+    report_type: str,
+    insight_json: dict,
+    headline: str | None = None,
+    llm_output_markdown: str | None = None,
+) -> GeneratedReport:
+    """Insert or update a GeneratedReport row, keyed on the unique identity tuple."""
+    stmt = (
+        insert(GeneratedReport)
+        .values(
+            game_id=game_id,
+            team_id=team_id,
+            persona_key=persona_key,
+            report_type=report_type,
+            insight_json=insight_json,
+            headline=headline,
+            llm_output_markdown=llm_output_markdown,
+        )
+        .on_conflict_do_update(
+            constraint="uq_generated_reports_identity",
+            set_={
+                "insight_json": insight_json,
+                "headline": headline,
+                "llm_output_markdown": llm_output_markdown,
+            },
+        )
+        .returning(GeneratedReport)
+    )
+    result = session.execute(stmt)
+    session.commit()
+    return result.scalars().one()
 
 
 def run() -> None:
@@ -63,30 +100,17 @@ def run() -> None:
 
     session: Session = SessionLocal()
     try:
-        row = GeneratedReport(
+        row = upsert_report(
+            session=session,
             game_id=insight.game_id,
             team_id=insight.team.id,
             persona_key="team_analyst",
             report_type="postgame_insight",
             insight_json=insight.model_dump(mode="json"),
             headline="Guardians postgame snapshot",
-            llm_output_markdown=None,
         )
-        session.add(row)
-        session.commit()
-        session.refresh(row)
-
-        saved = session.get(GeneratedReport, row.id)
-        print(f"Saved report id: {saved.id if saved else row.id}")
-        print(saved.insight_json if saved else row.insight_json)
-    except IntegrityError:
-        session.rollback()
-        # A uniqueness error can occur when inserting the same identity tuple again.
-        print(
-            "Insert failed due to database constraints. "
-            "Ensure referenced game/team rows exist and avoid duplicate "
-            "(game_id, team_id, persona_key, report_type) entries."
-        )
+        print(f"Upserted report id: {row.id}")
+        print(row.insight_json)
     finally:
         session.close()
 
