@@ -109,6 +109,13 @@ Interactive docs: <http://localhost:8000/docs>
 | `GET`  | `/reports/{id}` | Fetch a report by primary-key id |
 | `GET`  | `/reports` | List reports (newest first); filter with `?game_id=&team_id=&persona_key=&report_type=` and paginate with `?limit=&offset=` |
 
+#### `POST /reports` body shape (important)
+
+- Send the **full wrapped request body** to `POST /reports`:
+  - `{ "report": { ...identity/persistence fields..., "insight_json": { ... } } }`
+- `backend/examples/postgame-report-contract.json` contains only the **inner** `insight_json` contract object.
+- If you submit only the inner object or the old unwrapped payload, FastAPI will return `422`.
+
 #### Example: upsert via curl
 
 ```bash
@@ -145,7 +152,7 @@ Expected shape:
 }
 ```
 
-`report_type="postgame_insight"` payloads are validated against the contract in `backend/examples/postgame-report-contract.json`, including matching `game_id` and `team.id`.
+`report_type="postgame_insight"` payloads are validated against the contract in `backend/examples/postgame-report-contract.json`, including matching `game_id` and `team.id`. That file is the `insight_json` shape only — keep the outer `{"report": ...}` wrapper in your request body.
 
 #### Example: upsert using the full sample request file
 

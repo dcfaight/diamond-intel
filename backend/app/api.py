@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
@@ -52,7 +52,13 @@ class ReportIdentityPayload(BaseModel):
 
 
 class ReportPayload(ReportIdentityPayload):
-    insight_json: dict
+    insight_json: dict = Field(
+        description=(
+            "Inner postgame insight payload (validated against "
+            "backend/examples/postgame-report-contract.json for "
+            "report_type='postgame_insight')."
+        )
+    )
 
     @model_validator(mode="after")
     def validate_postgame_payload(self):
@@ -73,6 +79,69 @@ class ReportPayload(ReportIdentityPayload):
 
 class ReportUpsertRequest(BaseModel):
     report: ReportPayload
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "report": {
+                    "game_id": 1,
+                    "team_id": 1,
+                    "persona_key": "team_analyst",
+                    "report_type": "postgame_insight",
+                    "headline": "Guardians postgame snapshot",
+                    "insight_json": {
+                        "game_id": 1,
+                        "team": {
+                            "id": 1,
+                            "name": "Cleveland Guardians",
+                            "abbreviation": "CLE",
+                        },
+                        "opponent": {
+                            "id": 2,
+                            "name": "Detroit Tigers",
+                            "abbreviation": "DET",
+                        },
+                        "game": {
+                            "date": "2026-05-28",
+                            "status": "Final",
+                            "score": {"team": 2, "opponent": 4},
+                            "result": "loss",
+                            "venue": "Progressive Field",
+                        },
+                        "top_factors": [
+                            {
+                                "key": "missed_chances",
+                                "title": "Missed chances with runners on",
+                                "detail": (
+                                    "Cleveland failed to convert enough traffic "
+                                    "into runs."
+                                ),
+                            }
+                        ],
+                        "player_trends": [
+                            {
+                                "player_name": "Jose Ramirez",
+                                "trend_type": "stock_up",
+                                "detail": (
+                                    "Reached base and remained the steadiest "
+                                    "threat in the lineup."
+                                ),
+                            }
+                        ],
+                        "watch_next": {
+                            "title": "What to watch next",
+                            "detail": (
+                                "Watch whether Cleveland can generate more "
+                                "extra-base impact in the next game."
+                            ),
+                        },
+                        "confidence": "medium",
+                        "generated_from": {"source": "manual_seed", "version": "v1"},
+                    },
+                }
+            }
+        }
+    }
 
 
 class SampleReportGenerationRequest(BaseModel):
@@ -115,7 +184,7 @@ def create_or_update_report(
     body: ReportUpsertRequest,
     db: Session = Depends(get_db),
 ):
-    """Create or update a generated postgame report (upsert on logical identity)."""
+    """Create or update a generated postgame report using body shape {'report': {...}}."""
     result = upsert_report(
         db,
         game_id=body.report.game_id,
