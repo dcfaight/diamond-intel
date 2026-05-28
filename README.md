@@ -29,4 +29,4 @@ README.md
    - `pip install -r /tmp/workspace/dcfaight/diamond-intel/backend/requirements.txt`
 4. Set the `DATABASE_URL` environment variable (or use the default fallback in `db.py`).
 5. Run:
-   - `python /tmp/workspace/dcfaight/diamond-intel/backend/app/main.py`
+   - `cd /tmp/workspace/dcfaight/diamond-intel/backend && python -m app.main`
