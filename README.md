@@ -76,6 +76,7 @@ cd backend && python -m unittest discover -s tests -v
 ```
 
 The test suite uses FastAPI's `TestClient` plus an in-memory SQLite database, so no local PostgreSQL instance is required for automated validation.
+`backend/requirements.txt` now includes the `httpx` dependency required by FastAPI's test client.
 
 ## API
 
