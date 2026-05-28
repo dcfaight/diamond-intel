@@ -98,19 +98,44 @@ def run() -> None:
 
     insight = PostgameReportInsight.model_validate(sample_report)
 
+    # To verify update behavior: change headline or confidence in sample_report above,
+    # then re-run. The output will show "Updated" instead of "Inserted".
+    persona_key = "team_analyst"
+    report_type = "postgame_insight"
+    headline = "Guardians postgame snapshot"
+
     session: Session = SessionLocal()
     try:
+        existing = (
+            session.query(GeneratedReport)
+            .filter_by(
+                game_id=insight.game_id,
+                team_id=insight.team.id,
+                persona_key=persona_key,
+                report_type=report_type,
+            )
+            .first()
+        )
+
         row = upsert_report(
             session=session,
             game_id=insight.game_id,
             team_id=insight.team.id,
-            persona_key="team_analyst",
-            report_type="postgame_insight",
+            persona_key=persona_key,
+            report_type=report_type,
             insight_json=insight.model_dump(mode="json"),
-            headline="Guardians postgame snapshot",
+            headline=headline,
         )
-        print(f"Upserted report id: {row.id}")
-        print(row.insight_json)
+
+        action = "Updated" if existing else "Inserted"
+        print(f"{action} report id: {row.id}")
+        print(
+            f"  Identity: game_id={row.game_id}, team_id={row.team_id},"
+            f" persona_key={row.persona_key!r}, report_type={row.report_type!r}"
+        )
+        print(f"  Headline : {row.headline!r}")
+        print(f"  Confidence: {row.insight_json.get('confidence', '?')}")
+        print(f"  Result   : {row.insight_json.get('game', {}).get('result', '?')}")
     finally:
         session.close()
 
