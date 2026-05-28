@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.models import GeneratedReport
 from app.report_service import (
+    ReportGenerationRequest,
+    ReportGenerationSource,
     generate_report,
     generate_sample_report,
     get_latest_report as get_latest_report_record,
@@ -108,6 +110,19 @@ class SampleReportGenerationRequest(BaseModel):
         return self
 
 
+class ReportGenerationSourcePayload(BaseModel):
+    mode: Literal["deterministic_local"] = "deterministic_local"
+    version: str = "v1"
+
+    @field_validator("version")
+    @classmethod
+    def validate_non_empty_version(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be empty")
+        return cleaned
+
+
 class GenerateReportRequest(BaseModel):
     """Request body for POST /reports/generate.
 
@@ -119,6 +134,9 @@ class GenerateReportRequest(BaseModel):
 
     report: ReportIdentityPayload
     force: bool = False
+    source: ReportGenerationSourcePayload = Field(
+        default_factory=ReportGenerationSourcePayload
+    )
 
     @model_validator(mode="after")
     def validate_supported_report_type(self):
@@ -146,6 +164,18 @@ class ReportResponse(BaseModel):
 class ReportUpsertResponse(BaseModel):
     action: Literal["inserted", "updated", "reused", "regenerated"]
     report: ReportResponse
+
+
+class ReportSummaryResponse(BaseModel):
+    id: int
+    game_id: int
+    team_id: int
+    persona_key: str
+    report_type: str
+    headline: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 # ---------------------------------------------------------------------------
@@ -203,12 +233,18 @@ def generate_report_endpoint(
     """
     result = generate_report(
         db,
-        game_id=body.report.game_id,
-        team_id=body.report.team_id,
-        persona_key=body.report.persona_key,
-        report_type=body.report.report_type,
-        headline=body.report.headline,
-        llm_output_markdown=body.report.llm_output_markdown,
+        request=ReportGenerationRequest(
+            game_id=body.report.game_id,
+            team_id=body.report.team_id,
+            persona_key=body.report.persona_key,
+            report_type=body.report.report_type,
+            headline=body.report.headline,
+            llm_output_markdown=body.report.llm_output_markdown,
+            source=ReportGenerationSource(
+                mode=body.source.mode,
+                version=body.source.version,
+            ),
+        ),
         force_regenerate=body.force,
     )
     return ReportUpsertResponse(action=result.action, report=result.report)
@@ -240,6 +276,82 @@ def get_latest_report(
     return row
 
 
+@app.get("/reports/latest/by-team/{team_id}", response_model=ReportResponse)
+def get_latest_report_by_team(
+    team_id: int,
+    db: Session = Depends(get_db),
+):
+    """Return the latest report for a single team."""
+    row = get_latest_report_record(db, team_id=team_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No matching report found")
+    return row
+
+
+@app.get("/reports/latest/by-persona/{persona_key}", response_model=ReportResponse)
+def get_latest_report_by_persona(
+    persona_key: str,
+    db: Session = Depends(get_db),
+):
+    """Return the latest report for a persona key."""
+    row = get_latest_report_record(db, persona_key=persona_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No matching report found")
+    return row
+
+
+@app.get("/reports/latest/by-report-type/{report_type}", response_model=ReportResponse)
+def get_latest_report_by_report_type(
+    report_type: str,
+    db: Session = Depends(get_db),
+):
+    """Return the latest report for a report type."""
+    row = get_latest_report_record(db, report_type=report_type)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No matching report found")
+    return row
+
+
+@app.get("/reports/latest/by-team-persona-type", response_model=ReportResponse)
+def get_latest_report_by_team_persona_type(
+    team_id: int,
+    persona_key: str,
+    report_type: str,
+    db: Session = Depends(get_db),
+):
+    """Return the latest report for an explicit team/persona/report_type tuple."""
+    row = get_latest_report_record(
+        db,
+        team_id=team_id,
+        persona_key=persona_key,
+        report_type=report_type,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="No matching report found")
+    return row
+
+
+@app.get("/reports/latest/summary", response_model=ReportSummaryResponse)
+def get_latest_report_summary(
+    game_id: int | None = None,
+    team_id: int | None = None,
+    persona_key: str | None = None,
+    report_type: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Return compact latest-report metadata for local inspection/UI list usage."""
+    row = get_latest_report_record(
+        db,
+        game_id=game_id,
+        team_id=team_id,
+        persona_key=persona_key,
+        report_type=report_type,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="No matching report found")
+    return row
+
+
 @app.get("/reports/by-identity", response_model=ReportResponse)
 def get_report_by_identity(
     game_id: int,
@@ -259,6 +371,28 @@ def get_report_by_identity(
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found for identity")
     return row
+
+
+@app.get("/reports/summaries", response_model=list[ReportSummaryResponse])
+def find_report_summaries(
+    game_id: int | None = None,
+    team_id: int | None = None,
+    persona_key: str | None = None,
+    report_type: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List compact report metadata with the same filters as GET /reports."""
+    return list_reports_records(
+        db,
+        game_id=game_id,
+        team_id=team_id,
+        persona_key=persona_key,
+        report_type=report_type,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get("/reports/{report_id}", response_model=ReportResponse)
